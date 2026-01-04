@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hearing Copilot</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Hearing Copilot – {{ case_name }}</h1>
+    <div class="controls">
+      <button id="pauseBtn">Pause Listening</button>
+      <label><input type="checkbox" id="doNotListen" /> Do not listen</label>
+      <button id="manualPush">Send last window (Ctrl+Enter)</button>
+      <label><input type="checkbox" id="autoMode" /> Auto mode</label>
+      <span class="hint">Hotkeys: Ctrl+Enter send, Ctrl+P pause</span>
+    </div>
+  </header>
+  <main>
+    <section id="transcript">
+      <h2>Transcript</h2>
+      <textarea id="manualInput" placeholder="Paste or type a transcript line; Enter to add"></textarea>
+      <div id="transcriptFeed"></div>
+    </section>
+    <section id="coach">
+      <h2>Coach Cards</h2>
+      <div id="coachFeed"></div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

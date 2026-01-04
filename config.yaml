@@ -1,0 +1,8 @@
+case_name: "Smith v. Jones"
+objectives:
+  - "Maintain composure and give concise answers"
+  - "Highlight procedural fairness"
+citation_style: "NM Bluebook"
+mode: "manual"
+window_seconds: 20
+auto_interval_seconds: 4
