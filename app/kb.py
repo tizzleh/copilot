@@ -59,7 +59,10 @@ class KBStore:
     @property
     def client(self):
         if self._client is None:
-            self._client = OpenAI()
+            try:
+                self._client = OpenAI()
+            except Exception:
+                return None
         return self._client
 
     def search(self, query: str, k: int = 3) -> List[dict]:
@@ -120,7 +123,10 @@ class KBStore:
 
     def _embed_text(self, text: str) -> np.ndarray:
         try:
-            resp = self.client.embeddings.create(
+            client = self.client
+            if client is None:
+                raise RuntimeError("OpenAI client unavailable")
+            resp = client.embeddings.create(
                 model="text-embedding-3-small", input=text
             )
             return np.array(resp.data[0].embedding, dtype="float32")

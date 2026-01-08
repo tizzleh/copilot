@@ -32,8 +32,8 @@ def chunk_text(text: str, chunk_size: int = 800, overlap: int = 80) -> Iterable[
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
-    client = OpenAI()
     try:
+        client = OpenAI()
         resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
         vectors = [item.embedding for item in resp.data]
     except Exception:
