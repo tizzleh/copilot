@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+
+import os
+
 import sqlite3
 from pathlib import Path
 from typing import Iterable, List
@@ -39,6 +42,22 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     except Exception:
         vectors = [np.random.default_rng(i).random(EMBED_DIM).tolist() for i, _ in enumerate(texts)]
     return np.array(vectors).astype("float32")
+
+
+def estimate_text_bytes(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def total_memory_bytes() -> int | None:
+    if hasattr(os, "sysconf"):
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            page_count = os.sysconf("SC_PHYS_PAGES")
+            if isinstance(page_size, int) and isinstance(page_count, int):
+                return page_size * page_count
+        except (ValueError, OSError):
+            return None
+    return None
 
 
 def iter_markdown_chunks(chunk_size: int) -> Iterable[dict]:
