@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+
 import os
+
 import sqlite3
 from pathlib import Path
 from typing import Iterable, List
@@ -128,16 +130,10 @@ def flush_shard(index: faiss.IndexIDMap2, shard_id: int) -> dict | None:
     return {"file": shard_file, "size": int(index.ntotal)}
 
 
-def build_index(
-    chunk_size: int,
-    batch_size: int,
-    shard_size: int,
-    max_batch_bytes: int | None,
-):
+def build_index(chunk_size: int, batch_size: int, shard_size: int):
     index = create_index()
     batch_texts: List[str] = []
     batch_ids: List[int] = []
-    batch_bytes = 0
     total_chunks = 0
     shard_chunks = 0
     shard_id = 0
@@ -152,17 +148,13 @@ def build_index(
         chunk_row_id = cursor.lastrowid
         batch_texts.append(chunk["text"])
         batch_ids.append(chunk_row_id)
-        batch_bytes += estimate_text_bytes(chunk["text"])
         shard_chunks += 1
-        if len(batch_texts) >= batch_size or (
-            max_batch_bytes is not None and batch_bytes >= max_batch_bytes
-        ):
+        if len(batch_texts) >= batch_size:
             vectors = embed_texts(batch_texts)
             faiss.normalize_L2(vectors)
             index.add_with_ids(vectors, np.array(batch_ids, dtype="int64"))
             batch_texts = []
             batch_ids = []
-            batch_bytes = 0
 
         if shard_chunks >= shard_size:
             if batch_texts:
@@ -171,7 +163,6 @@ def build_index(
                 index.add_with_ids(vectors, np.array(batch_ids, dtype="int64"))
                 batch_texts = []
                 batch_ids = []
-                batch_bytes = 0
             entry = flush_shard(index, shard_id)
             if entry:
                 manifest_entries.append(entry)
@@ -202,26 +193,8 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=800)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--shard-size", type=int, default=2000)
-    parser.add_argument(
-        "--batch-ram-fraction",
-        type=float,
-        default=None,
-        help="Approximate fraction of system RAM to use for batching text (e.g. 0.5).",
-    )
     args = parser.parse_args()
-    max_batch_bytes = None
-    if args.batch_ram_fraction is not None:
-        if not 0 < args.batch_ram_fraction <= 1:
-            raise ValueError("--batch-ram-fraction must be between 0 and 1.")
-        total_ram = total_memory_bytes()
-        if total_ram:
-            max_batch_bytes = int(total_ram * args.batch_ram_fraction)
-    build_index(
-        chunk_size=args.chunk_size,
-        batch_size=args.batch_size,
-        shard_size=args.shard_size,
-        max_batch_bytes=max_batch_bytes,
-    )
+    build_index(chunk_size=args.chunk_size, batch_size=args.batch_size, shard_size=args.shard_size)
 
 
 if __name__ == "__main__":
