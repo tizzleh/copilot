@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
 from pathlib import Path
 from typing import Iterable, List
 
@@ -13,30 +15,47 @@ from PyPDF2 import PdfReader
 DATA_DIR = Path("data")
 SOURCE_DIR = Path("sources")
 HEARING_PACK = Path("hearing_pack.md")
+SHARDS_DIR = DATA_DIR / "kb_shards"
+MANIFEST_PATH = DATA_DIR / "kb_manifest.json"
+META_DB_PATH = DATA_DIR / "kb_metadata.sqlite"
+EMBED_DIM = 1536
 
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 80) -> List[str]:
+def chunk_text(text: str, chunk_size: int = 800, overlap: int = 80) -> Iterable[str]:
     words = text.split()
-    chunks = []
     start = 0
     while start < len(words):
         end = min(len(words), start + chunk_size)
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
+        yield " ".join(words[start:end])
         start = end - overlap
         if start < 0:
             start = 0
-    return chunks
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
-    client = OpenAI()
     try:
+        client = OpenAI()
         resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
         vectors = [item.embedding for item in resp.data]
     except Exception:
-        vectors = [np.random.default_rng(i).random(1536).tolist() for i, _ in enumerate(texts)]
+        vectors = [np.random.default_rng(i).random(EMBED_DIM).tolist() for i, _ in enumerate(texts)]
     return np.array(vectors).astype("float32")
+
+
+def estimate_text_bytes(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def total_memory_bytes() -> int | None:
+    if hasattr(os, "sysconf"):
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            page_count = os.sysconf("SC_PHYS_PAGES")
+            if isinstance(page_size, int) and isinstance(page_count, int):
+                return page_size * page_count
+        except (ValueError, OSError):
+            return None
+    return None
 
 
 def iter_markdown_chunks(chunk_size: int) -> Iterable[dict]:
@@ -71,47 +90,138 @@ def iter_all_chunks(chunk_size: int) -> Iterable[dict]:
     yield from iter_pdf_chunks(chunk_size)
 
 
-def build_index(chunks: List[dict], chunk_size: int, batch_size: int):
-    index = None
+def init_metadata_db() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(META_DB_PATH)
+    with conn:
+        conn.execute(
+            """
+            create table if not exists chunks (
+                id integer primary key,
+                chunk_id text,
+                source text,
+                location text,
+                text text
+            )
+            """
+        )
+        conn.execute("delete from chunks")
+    return conn
+
+
+def write_manifest(entries: List[dict]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with MANIFEST_PATH.open("w", encoding="utf-8") as f:
+        json.dump({"shards": entries}, f, indent=2)
+
+
+def create_index() -> faiss.IndexIDMap2:
+    return faiss.IndexIDMap2(faiss.IndexFlatIP(EMBED_DIM))
+
+
+def flush_shard(index: faiss.IndexIDMap2, shard_id: int) -> dict | None:
+    if index.ntotal == 0:
+        return None
+    SHARDS_DIR.mkdir(parents=True, exist_ok=True)
+    shard_file = f"kb_shard_{shard_id}.faiss"
+    faiss.write_index(index, str(SHARDS_DIR / shard_file))
+    return {"file": shard_file, "size": int(index.ntotal)}
+
+
+def build_index(
+    chunk_size: int,
+    batch_size: int,
+    shard_size: int,
+    max_batch_bytes: int | None,
+):
+    index = create_index()
     batch_texts: List[str] = []
+    batch_ids: List[int] = []
+    batch_bytes = 0
     total_chunks = 0
+    shard_chunks = 0
+    shard_id = 0
+    manifest_entries: List[dict] = []
+    conn = init_metadata_db()
     for chunk in iter_all_chunks(chunk_size):
         total_chunks += 1
-        chunks.append(chunk)
+        cursor = conn.execute(
+            "insert into chunks (chunk_id, source, location, text) values (?, ?, ?, ?)",
+            (chunk["chunk_id"], chunk["source"], chunk["location"], chunk["text"]),
+        )
+        chunk_row_id = cursor.lastrowid
         batch_texts.append(chunk["text"])
-        if len(batch_texts) >= batch_size:
+        batch_ids.append(chunk_row_id)
+        batch_bytes += estimate_text_bytes(chunk["text"])
+        shard_chunks += 1
+        if len(batch_texts) >= batch_size or (
+            max_batch_bytes is not None and batch_bytes >= max_batch_bytes
+        ):
             vectors = embed_texts(batch_texts)
-            if index is None:
-                index = faiss.IndexFlatIP(vectors.shape[1])
             faiss.normalize_L2(vectors)
-            index.add(vectors)
+            index.add_with_ids(vectors, np.array(batch_ids, dtype="int64"))
             batch_texts = []
+            batch_ids = []
+            batch_bytes = 0
+
+        if shard_chunks >= shard_size:
+            if batch_texts:
+                vectors = embed_texts(batch_texts)
+                faiss.normalize_L2(vectors)
+                index.add_with_ids(vectors, np.array(batch_ids, dtype="int64"))
+                batch_texts = []
+                batch_ids = []
+                batch_bytes = 0
+            entry = flush_shard(index, shard_id)
+            if entry:
+                manifest_entries.append(entry)
+            shard_id += 1
+            shard_chunks = 0
+            index = create_index()
 
     if batch_texts:
         vectors = embed_texts(batch_texts)
-        if index is None:
-            index = faiss.IndexFlatIP(vectors.shape[1])
         faiss.normalize_L2(vectors)
-        index.add(vectors)
+        index.add_with_ids(vectors, np.array(batch_ids, dtype="int64"))
 
-    if total_chunks == 0 or index is None:
+    if total_chunks == 0:
         print("No chunks found; nothing to index.")
         return
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    faiss.write_index(index, str(DATA_DIR / "kb_index.faiss"))
-    with (DATA_DIR / "kb_metadata.json").open("w", encoding="utf-8") as f:
-        json.dump(chunks, f, indent=2)
-    print(f"Wrote {len(chunks)} chunks to {DATA_DIR}")
+    entry = flush_shard(index, shard_id)
+    if entry:
+        manifest_entries.append(entry)
+    write_manifest(manifest_entries)
+    conn.commit()
+    conn.close()
+    print(f"Wrote {total_chunks} chunks to {DATA_DIR}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest hearing pack and sources into FAISS index")
     parser.add_argument("--chunk-size", type=int, default=800)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--shard-size", type=int, default=2000)
+    parser.add_argument(
+        "--batch-ram-fraction",
+        type=float,
+        default=None,
+        help="Approximate fraction of system RAM to use for batching text (e.g. 0.5).",
+    )
     args = parser.parse_args()
-    chunks: List[dict] = []
-    build_index(chunks, chunk_size=args.chunk_size, batch_size=args.batch_size)
+    max_batch_bytes = None
+    if args.batch_ram_fraction is not None:
+        if not 0 < args.batch_ram_fraction <= 1:
+            raise ValueError("--batch-ram-fraction must be between 0 and 1.")
+        total_ram = total_memory_bytes()
+        if total_ram:
+            max_batch_bytes = int(total_ram * args.batch_ram_fraction)
+    build_index(
+        chunk_size=args.chunk_size,
+        batch_size=args.batch_size,
+        shard_size=args.shard_size,
+        max_batch_bytes=max_batch_bytes,
+    )
 
 
 if __name__ == "__main__":
