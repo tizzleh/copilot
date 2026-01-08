@@ -20,18 +20,15 @@ META_DB_PATH = DATA_DIR / "kb_metadata.sqlite"
 EMBED_DIM = 1536
 
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 80) -> List[str]:
+def chunk_text(text: str, chunk_size: int = 800, overlap: int = 80) -> Iterable[str]:
     words = text.split()
-    chunks = []
     start = 0
     while start < len(words):
         end = min(len(words), start + chunk_size)
-        chunk = " ".join(words[start:end])
-        chunks.append(chunk)
+        yield " ".join(words[start:end])
         start = end - overlap
         if start < 0:
             start = 0
-    return chunks
 
 
 def embed_texts(texts: List[str]) -> np.ndarray:
