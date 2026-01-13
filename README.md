@@ -44,3 +44,6 @@ Edit `config.yaml` to set `case_name`, `objectives`, `citation_style`, default `
 ## Notes
 - When OpenAI is unavailable, the app falls back to a deterministic, offline coach response while still honoring KB citations and logging.
 - All logs stay in `logs/interaction-log.jsonl` (JSONL with timestamps).
+
+## Mock hearing dry-run
+To practice on a recorded hearing (e.g., from YouTube), copy `hearing_pack_template.md` to `hearing_pack.md`, fill in the facts and authorities from the video, and follow the step-by-step guide in `docs/mock_hearing_workflow.md`.
